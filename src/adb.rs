@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Result};
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::process::Command;
 use std::path::Path;
 
@@ -163,67 +165,18 @@ fn get_common_adb_paths() -> Vec<String> {
 }
 
 pub fn check_adb_available() -> Result<String> {
-    let adb_path = find_adb_path()?;
-    
-    let output = run_adb_command(&adb_path, &["version"])?;
-    
-    if output.status.success() {
-        let version = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(version)
-    } else {
-        Err(anyhow!("ADB found at {} but failed to run", adb_path))
-    }
+    ensure_adb_server_running()?;
+    check_adb_server_running()
 }
 
 pub fn get_devices() -> Result<Vec<Device>> {
-    let adb_path = find_adb_path()?;
-    
-    let output = run_adb_command(&adb_path, &["devices", "-l"])?;
-    
-    if !output.status.success() {
-        return Err(anyhow!("Failed to execute adb devices"));
-    }
-    
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    
-    let mut devices = Vec::new();
-    
-    for (idx, line) in stdout.lines().enumerate() {
-        if idx == 0 {
-            continue;
-        }
-        
-        if line.trim().is_empty() {
-            continue;
-        }
-        
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 && (parts[1] == "device" || parts[1] == "unauthorized" || parts[1] == "offline") {
-            let id = parts[0].to_string();
-            let status = parts[1].to_string();
-            
-            let mut device = Device {
-                id,
-                status,
-                model: None,
-            };
-            
-            if device.status == "device" {
-                if let Some(model) = get_device_model(&adb_path, &device.id) {
-                    device.model = Some(model);
-                }
-            }
-            
-            devices.push(device);
-        }
-    }
-    
-    Ok(devices)
+    ensure_adb_server_running()?;
+    get_devices_socket()
 }
 
 fn get_device_model(adb_path: &str, device_id: &str) -> Option<String> {
     let output = run_adb_command(adb_path, &["-s", device_id, "shell", "getprop", "ro.product.model"]).ok()?;
-    
+
     let model = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if model.is_empty() {
         None
@@ -233,14 +186,8 @@ fn get_device_model(adb_path: &str, device_id: &str) -> Option<String> {
 }
 
 pub fn execute_command(device_id: &str, command: &str) -> Result<(String, String)> {
-    let adb_path = find_adb_path()?;
-    
-    let output = run_adb_command(&adb_path, &["-s", device_id, "shell", command])?;
-    
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    
-    Ok((stdout, stderr))
+    ensure_adb_server_running()?;
+    execute_command_socket(device_id, command)
 }
 
 pub fn batch_execute(devices: &[String], command: &str) -> Vec<(String, Result<(String, String)>)> {
@@ -300,27 +247,25 @@ pub fn batch_push(devices: &[String], local_path: &str, remote_path: &str) -> Ve
 }
 
 pub fn run_binary(device_id: &str, binary_path: &str, args: &[&str]) -> Result<(String, String)> {
-    let adb_path = find_adb_path()?;
-    
-    let mut cmd_args = vec!["-s", device_id, "shell", binary_path];
-    cmd_args.extend_from_slice(args);
-    
-    let output = run_adb_command(&adb_path, &cmd_args)?;
-    
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    
-    Ok((stdout, stderr))
+    ensure_adb_server_running()?;
+
+    let full_command = if args.is_empty() {
+        binary_path.to_string()
+    } else {
+        format!("{} {}", binary_path, args.join(" "))
+    };
+
+    execute_command_socket(device_id, &full_command)
 }
 
 pub fn list_files(device_id: &str, path: &str) -> Result<Vec<FileEntry>> {
     let adb_path = find_adb_path()?;
-    
+
     let output = run_adb_command(&adb_path, &["-s", device_id, "shell", "ls", "-la", path])?;
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut files = Vec::new();
-    
+
     for line in stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 7 {
@@ -334,6 +279,190 @@ pub fn list_files(device_id: &str, path: &str) -> Result<Vec<FileEntry>> {
             });
         }
     }
-    
+
     Ok(files)
+}
+
+// ========== Socket-based ADB communication ==========
+
+const ADB_HOST: &str = "127.0.0.1";
+const ADB_PORT: u16 = 5037;
+
+/// Connect to ADB server via socket
+fn connect_adb() -> Result<TcpStream> {
+    let stream = TcpStream::connect((ADB_HOST, ADB_PORT))
+        .map_err(|e| anyhow!("Failed to connect to ADB server at {}:{}: {}", ADB_HOST, ADB_PORT, e))?;
+    Ok(stream)
+}
+
+/// Send ADB command and read response
+fn adb_socket_command(command: &str) -> Result<String> {
+    let mut stream = connect_adb()?;
+
+    // ADB protocol: send length in hex (4 bytes) followed by the command
+    let cmd_len = format!("{:04x}{}", command.len(), command);
+    stream.write_all(cmd_len.as_bytes())?;
+
+    // Read response: first 4 bytes indicate status or length
+    let mut response_header = [0u8; 4];
+    stream.read_exact(&mut response_header)?;
+
+    let header = String::from_utf8_lossy(&response_header);
+
+    if header == "OKAY" {
+        // Read length of data to follow
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf)?;
+        let len_str = String::from_utf8_lossy(&len_buf);
+        let len = usize::from_str_radix(len_str.trim(), 16)
+            .map_err(|e| anyhow!("Invalid length in ADB response: {}", e))?;
+
+        if len > 0 {
+            let mut data = vec![0u8; len];
+            stream.read_exact(&mut data)?;
+            Ok(String::from_utf8_lossy(&data).to_string())
+        } else {
+            Ok(String::new())
+        }
+    } else if header == "FAIL" {
+        // Read error message
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf)?;
+        let len_str = String::from_utf8_lossy(&len_buf);
+        let len = usize::from_str_radix(len_str.trim(), 16)
+            .map_err(|e| anyhow!("Invalid length in ADB response: {}", e))?;
+
+        let mut data = vec![0u8; len];
+        stream.read_exact(&mut data)?;
+        Err(anyhow!("ADB command failed: {}", String::from_utf8_lossy(&data)))
+    } else {
+        // Could be a direct response (like from "host:devices" or "host:version")
+        // Read remaining data
+        let mut data = vec![0u8; 4];
+        stream.read_exact(&mut data)?;
+        let len_str = String::from_utf8_lossy(&data);
+        let len = usize::from_str_radix(len_str.trim(), 16)
+            .map_err(|e| anyhow!("Invalid length in ADB response: {}", e))?;
+
+        if len > 0 {
+            let mut response_data = vec![0u8; len];
+            stream.read_exact(&mut response_data)?;
+            Ok(String::from_utf8_lossy(&response_data).to_string())
+        } else {
+            Ok(header.to_string())
+        }
+    }
+}
+
+/// Get ADB server version via socket
+pub fn get_adb_version_socket() -> Result<String> {
+    let response = adb_socket_command("host:version")?;
+    Ok(format!("ADB server version: {}", response))
+}
+
+/// Get list of devices via socket connection to ADB server
+pub fn get_devices_socket() -> Result<Vec<Device>> {
+    let response = adb_socket_command("host:devices-l")?;
+
+    let mut devices = Vec::new();
+
+    for line in response.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && (parts[1] == "device" || parts[1] == "unauthorized" || parts[1] == "offline") {
+            let id = parts[0].to_string();
+            let status = parts[1].to_string();
+
+            let mut device = Device {
+                id,
+                status,
+                model: None,
+            };
+
+            if device.status == "device" {
+                if let Some(model) = get_device_model_socket(&device.id)? {
+                    device.model = Some(model);
+                }
+            }
+
+            devices.push(device);
+        }
+    }
+
+    Ok(devices)
+}
+
+/// Get device property via socket
+fn get_device_model_socket(device_id: &str) -> Result<Option<String>> {
+    let command = format!("host-serial:{}:getprop:ro.product.model", device_id);
+    match adb_socket_command(&command) {
+        Ok(response) => {
+            let model = response.trim().to_string();
+            if model.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(model))
+            }
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// Execute shell command on device via socket
+pub fn execute_command_socket(device_id: &str, command: &str) -> Result<(String, String)> {
+    // For shell commands, we need to open a new connection and use "shell:" command
+    let mut stream = connect_adb()?;
+
+    // Send the shell command
+    let cmd = if device_id.is_empty() {
+        format!("shell:{}", command)
+    } else {
+        format!("host-serial:{}:shell:{}", device_id, command)
+    };
+
+    let cmd_len = format!("{:04x}{}", cmd.len(), cmd);
+    stream.write_all(cmd_len.as_bytes())?;
+
+    // Read response header
+    let mut response_header = [0u8; 4];
+    stream.read_exact(&mut response_header)?;
+    let header = String::from_utf8_lossy(&response_header);
+
+    if header != "OKAY" {
+        return Err(anyhow!("Failed to execute shell command: {}", header));
+    }
+
+    // Read output until connection closes
+    let mut stdout = String::new();
+    match stream.read_to_string(&mut stdout) {
+        Ok(_) => Ok((stdout, String::new())),
+        Err(e) => Err(anyhow!("Error reading command output: {}", e)),
+    }
+}
+
+/// Check if ADB server is running via socket
+pub fn check_adb_server_running() -> Result<String> {
+    match connect_adb() {
+        Ok(_) => {
+            let version = get_adb_version_socket()?;
+            Ok(version)
+        }
+        Err(e) => Err(anyhow!("ADB server not running: {}", e)),
+    }
+}
+
+/// Start ADB server if not running
+pub fn ensure_adb_server_running() -> Result<()> {
+    if connect_adb().is_err() {
+        // Try to start ADB server
+        let adb_path = find_adb_path()?;
+        let output = run_adb_command(&adb_path, &["start-server"])?;
+        if !output.status.success() {
+            return Err(anyhow!("Failed to start ADB server"));
+        }
+    }
+    Ok(())
 }

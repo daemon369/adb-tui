@@ -63,35 +63,25 @@ impl App {
 
     fn refresh_devices(&mut self) {
         self.add_log("Refreshing devices...".to_string());
-        
-        match adb::find_adb_path() {
-            Ok(adb_path) => {
-                self.add_log(format!("Using ADB at: {}", adb_path));
-                
-                match adb::get_devices() {
-                    Ok(devices) => {
-                        let count = devices.len();
-                        self.add_log(format!("Found {} device(s)", count));
-                        
-                        for device in &devices {
-                            self.add_log(format!("  - {} ({}) - status: {}", 
-                                device.id, 
-                                device.model.as_deref().unwrap_or("Unknown"),
-                                device.status));
-                        }
-                        
-                        self.devices = devices;
-                        self.status_message = format!("Found {} device(s)", count);
-                    }
-                    Err(e) => {
-                        self.add_log(format!("Error getting devices: {}", e));
-                        self.status_message = format!("Error: {}", e);
-                    }
+
+        match adb::get_devices() {
+            Ok(devices) => {
+                let count = devices.len();
+                self.add_log(format!("Found {} device(s)", count));
+
+                for device in &devices {
+                    self.add_log(format!("  - {} ({}) - status: {}",
+                        device.id,
+                        device.model.as_deref().unwrap_or("Unknown"),
+                        device.status));
                 }
+
+                self.devices = devices;
+                self.status_message = format!("Found {} device(s)", count);
             }
             Err(e) => {
-                self.add_log(format!("ADB not found: {}", e));
-                self.status_message = "ADB not found. Install Android SDK Platform-Tools".to_string();
+                self.add_log(format!("Error getting devices: {}", e));
+                self.status_message = format!("Error: {}", e);
             }
         }
     }
