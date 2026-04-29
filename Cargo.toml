@@ -1,0 +1,14 @@
+[package]
+name = "adb-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.26"
+crossterm = "0.27"
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
