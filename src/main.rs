@@ -8,6 +8,8 @@ use crossterm::{
 };
 use ratatui::{prelude::*, widgets::*};
 use std::io::stdout;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::Duration;
 
 enum AppScreen {
@@ -34,10 +36,18 @@ struct App {
     status_message: String,
     logs: Vec<String>,
     should_quit: bool,
+    device_rx: Receiver<Vec<adb::Device>>,
 }
 
 impl App {
     fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn background thread to listen for ADB device changes
+        thread::spawn(move || {
+            adb::track_devices(tx);
+        });
+
         Self {
             devices: Vec::new(),
             selected_device: None,
@@ -54,6 +64,7 @@ impl App {
             status_message: "Press 'q' to quit, 'r' to refresh devices".to_string(),
             logs: Vec::new(),
             should_quit: false,
+            device_rx: rx,
         }
     }
 
@@ -87,6 +98,31 @@ impl App {
                 self.add_log(format!("Error getting devices: {}", e));
                 self.status_message = format!("Error: {}", e);
             }
+        }
+    }
+
+    fn update_devices(&mut self, new_devices: Vec<adb::Device>) {
+        let old_count = self.devices.len();
+        let new_count = new_devices.len();
+
+        if old_count != new_count {
+            self.add_log(format!("Device list changed: {} -> {} device(s)", old_count, new_count));
+        }
+
+        self.devices = new_devices;
+
+        // Update selected_device if needed
+        if let Some(idx) = self.selected_device {
+            if idx >= self.devices.len() {
+                self.selected_device = if self.devices.is_empty() { None } else { Some(0) };
+            }
+        }
+
+        // Remove invalid multi-selections
+        self.selected_devices.retain(|&idx| idx < self.devices.len());
+
+        if old_count != new_count {
+            self.status_message = format!("Device list updated: {} device(s)", new_count);
         }
     }
 
@@ -302,7 +338,6 @@ fn check_adb() -> Result<()> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
-        let is_commands = matches!(app.screen, AppScreen::Commands);
         terminal.draw(|f| ui(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -311,6 +346,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                     handle_key_event(key, app);
                 }
             }
+        }
+
+        // Check for device updates from background thread
+        while let Ok(new_devices) = app.device_rx.try_recv() {
+            app.update_devices(new_devices);
         }
 
         if app.should_quit {

@@ -476,3 +476,111 @@ pub fn ensure_adb_server_running() -> Result<()> {
     }
     Ok(())
 }
+
+/// Listen for device changes using ADB track-devices feature
+/// This function runs in a background thread and sends device updates via the channel
+pub fn track_devices(tx: std::sync::mpsc::Sender<Vec<Device>>) {
+    loop {
+        // Ensure ADB server is running
+        if ensure_adb_server_running().is_err() {
+            // Wait before retrying
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            continue;
+        }
+
+        // Connect to ADB server
+        let mut stream = match connect_adb() {
+            Ok(s) => s,
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                continue;
+            }
+        };
+
+        // Send track-devices command
+        let cmd = "host:track-devices";
+        let cmd_len = format!("{:04x}{}", cmd.len(), cmd);
+        if stream.write_all(cmd_len.as_bytes()).is_err() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            continue;
+        }
+
+        // Read initial response
+        let mut response_header = [0u8; 4];
+        if stream.read_exact(&mut response_header).is_err() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            continue;
+        }
+
+        let header = String::from_utf8_lossy(&response_header);
+        if header != "OKAY" {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            continue;
+        }
+
+        // Read initial device list
+        if let Ok(devices) = read_track_response(&mut stream) {
+            let _ = tx.send(devices);
+        }
+
+        // Now loop reading updates - the connection stays open
+        loop {
+            match read_track_response(&mut stream) {
+                Ok(devices) => {
+                    let _ = tx.send(devices);
+                }
+                Err(_) => {
+                    // Connection lost, reconnect
+                    break;
+                }
+            }
+        }
+
+        // Wait before reconnecting
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+}
+
+/// Read a track-devices response
+fn read_track_response(stream: &mut TcpStream) -> Result<Vec<Device>> {
+    // Read length of data
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf)?;
+    let len_str = String::from_utf8_lossy(&len_buf);
+    let len = usize::from_str_radix(len_str.trim(), 16)
+        .map_err(|e| anyhow!("Invalid length in ADB response: {}", e))?;
+
+    if len > 0 {
+        let mut data = vec![0u8; len];
+        stream.read_exact(&mut data)?;
+        let response = String::from_utf8_lossy(&data).to_string();
+        parse_device_list(&response)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Parse device list from ADB response
+fn parse_device_list(response: &str) -> Result<Vec<Device>> {
+    let mut devices = Vec::new();
+
+    for line in response.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && (parts[1] == "device" || parts[1] == "unauthorized" || parts[1] == "offline") {
+            let id = parts[0].to_string();
+            let status = parts[1].to_string();
+
+            devices.push(Device {
+                id,
+                status,
+                model: None,
+            });
+        }
+    }
+
+    Ok(devices)
+}
