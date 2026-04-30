@@ -413,17 +413,27 @@ fn get_device_model_socket(device_id: &str) -> Result<Option<String>> {
 
 /// Execute shell command on device via socket
 pub fn execute_command_socket(device_id: &str, command: &str) -> Result<(String, String)> {
-    // For shell commands, we need to open a new connection and use "shell:" command
     let mut stream = connect_adb()?;
 
-    // Send the shell command
-    let cmd = if device_id.is_empty() {
-        format!("shell:{}", command)
-    } else {
-        format!("host-serial:{}:shell:{}", device_id, command)
-    };
+    // First, select the device by sending transport command
+    if !device_id.is_empty() {
+        let transport_cmd = format!("host:transport:{}", device_id);
+        let cmd_len = format!("{:04x}{}", transport_cmd.len(), transport_cmd);
+        stream.write_all(cmd_len.as_bytes())?;
 
-    let cmd_len = format!("{:04x}{}", cmd.len(), cmd);
+        // Read response header
+        let mut response_header = [0u8; 4];
+        stream.read_exact(&mut response_header)?;
+        let header = String::from_utf8_lossy(&response_header);
+
+        if header != "OKAY" {
+            return Err(anyhow!("Failed to select device: {}", header));
+        }
+    }
+
+    // Now send the shell command
+    let shell_cmd = format!("shell:{}", command);
+    let cmd_len = format!("{:04x}{}", shell_cmd.len(), shell_cmd);
     stream.write_all(cmd_len.as_bytes())?;
 
     // Read response header
