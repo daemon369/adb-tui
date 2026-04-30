@@ -134,6 +134,14 @@ impl App {
         }
     }
 
+    fn clear_device_selection(&mut self) {
+        self.selected_devices.clear();
+    }
+
+    fn select_all_devices(&mut self) {
+        self.selected_devices = (0..self.devices.len()).collect();
+    }
+
     fn execute_command(&mut self) {
         if self.command_input.is_empty() {
             return;
@@ -404,10 +412,16 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
                     app.selected_device = Some(0);
                 }
             }
-            KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char(' ') => {
                 if let Some(idx) = app.selected_device {
                     app.toggle_device_selection(idx);
                 }
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.clear_device_selection();
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.select_all_devices();
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                 if let Some(idx) = app.selected_device {
@@ -566,11 +580,15 @@ fn render_devices(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, d)| {
-            let selected = app.selected_device == Some(i);
-            let multi_selected = app.selected_devices.contains(&i);
-            let marker = if multi_selected { "[x]" } else { "[ ]" };
-            let style = if selected {
+            let is_current = app.selected_device == Some(i);
+            let is_multi_selected = app.selected_devices.contains(&i);
+            let marker = if is_multi_selected { "[x]" } else { "[ ]" };
+            let style = if is_current && is_multi_selected {
+                Style::default().fg(Color::Green).bg(Color::DarkGray)
+            } else if is_current {
                 Style::default().fg(Color::Yellow)
+            } else if is_multi_selected {
+                Style::default().fg(Color::Green)
             } else {
                 Style::default()
             };
@@ -586,21 +604,32 @@ fn render_devices(f: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let devices_list = List::new(device_items)
-        .block(Block::default().borders(Borders::ALL).title("Devices (Space to multi-select)"))
+        .block(Block::default().borders(Borders::ALL).title(format!("Devices ({} selected) [Space: toggle, Ctrl+A/Ctrl+D]", app.selected_devices.len())))
         .highlight_style(Style::default().bg(Color::DarkGray));
     f.render_widget(devices_list, chunks[0]);
 
-    let info = if let Some(idx) = app.selected_device {
-        let d = &app.devices[idx];
-        format!(
-            "Device ID: {}\nStatus: {}\nModel: {}\n\nSelected for batch: {} device(s)",
-            d.id,
-            d.status,
-            d.model.as_deref().unwrap_or("Unknown"),
-            app.selected_devices.len()
-        )
+    let info = if app.selected_devices.is_empty() {
+        if let Some(idx) = app.selected_device {
+            let d = &app.devices[idx];
+            format!(
+                "Device ID: {}\nStatus: {}\nModel: {}\n\nSelected for batch: none (use Space to select)",
+                d.id,
+                d.status,
+                d.model.as_deref().unwrap_or("Unknown")
+            )
+        } else {
+            "No device selected".to_string()
+        }
     } else {
-        "No device selected".to_string()
+        let selected_info: Vec<String> = app.selected_devices.iter()
+            .filter_map(|&i| app.devices.get(i))
+            .map(|d| format!("  [x] {} ({})", d.id, d.model.as_deref().unwrap_or("Unknown")))
+            .collect();
+        format!(
+            "Selected for batch ({}):\n{}\n\nPress Space to toggle selection\nCtrl+D to clear selection",
+            app.selected_devices.len(),
+            selected_info.join("\n")
+        )
     };
 
     let info_widget = Paragraph::new(info)
