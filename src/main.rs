@@ -25,6 +25,8 @@ struct App {
     screen: AppScreen,
     command_input: String,
     command_output: Vec<String>,
+    command_history: Vec<String>,
+    history_index: Option<usize>,
     file_remote_path: String,
     file_local_path: String,
     binary_path: String,
@@ -43,6 +45,8 @@ impl App {
             screen: AppScreen::Devices,
             command_input: String::new(),
             command_output: Vec::new(),
+            command_history: Vec::new(),
+            history_index: None,
             file_remote_path: String::new(),
             file_local_path: String::new(),
             binary_path: String::new(),
@@ -135,6 +139,11 @@ impl App {
             }
         }
 
+        // Add to history (avoid duplicates of consecutive commands)
+        if self.command_history.last() != Some(&self.command_input) {
+            self.command_history.push(self.command_input.clone());
+        }
+        self.history_index = None;
         self.command_input.clear();
     }
 
@@ -364,17 +373,45 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
         },
         AppScreen::Commands => match key.code {
             KeyCode::Enter => app.execute_command(),
-        KeyCode::Char(c) => app.command_input.push(c),
-        KeyCode::Backspace => {
-            app.command_input.pop();
-        }
-        KeyCode::Left => {
-            // No-op for now, could add cursor movement later
-        }
-        KeyCode::Right => {
-            // No-op for now, could add cursor movement later
-        }
-        _ => {}
+            KeyCode::Char(c) => {
+                app.history_index = None;
+                app.command_input.push(c);
+            }
+            KeyCode::Backspace => {
+                app.history_index = None;
+                app.command_input.pop();
+            }
+            KeyCode::Up => {
+                if !app.command_history.is_empty() {
+                    let new_index = match app.history_index {
+                        None => app.command_history.len().saturating_sub(1),
+                        Some(0) => 0,
+                        Some(idx) => idx - 1,
+                    };
+                    app.history_index = Some(new_index);
+                    app.command_input = app.command_history[new_index].clone();
+                }
+            }
+            KeyCode::Down => {
+                match app.history_index {
+                    Some(idx) if idx + 1 < app.command_history.len() => {
+                        app.history_index = Some(idx + 1);
+                        app.command_input = app.command_history[idx + 1].clone();
+                    }
+                    Some(_) => {
+                        app.history_index = None;
+                        app.command_input.clear();
+                    }
+                    None => {}
+                }
+            }
+            KeyCode::Left => {
+                // No-op for now, could add cursor movement later
+            }
+            KeyCode::Right => {
+                // No-op for now, could add cursor movement later
+            }
+            _ => {}
         },
         AppScreen::Files => match key.code {
             KeyCode::Enter => {
