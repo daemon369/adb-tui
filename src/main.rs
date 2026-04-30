@@ -322,23 +322,23 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 
 fn handle_key_event(key: KeyEvent, app: &mut App) {
     match key.code {
-        KeyCode::Char('q') => {
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::ALT) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 app.should_quit = true;
             } else if matches!(app.screen, AppScreen::Commands | AppScreen::Files | AppScreen::RunBinary) {
                 app.screen = AppScreen::Devices;
             }
         }
-        KeyCode::Char('r') => {
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
             if matches!(app.screen, AppScreen::Devices) {
                 app.refresh_devices();
             }
         }
-        KeyCode::Char('1') => app.screen = AppScreen::Devices,
-        KeyCode::Char('2') => app.screen = AppScreen::Commands,
-        KeyCode::Char('3') => app.screen = AppScreen::Files,
-        KeyCode::Char('4') => app.screen = AppScreen::RunBinary,
-        KeyCode::Char('5') => app.screen = AppScreen::Logs,
+        KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Devices,
+        KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Commands,
+        KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Files,
+        KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::RunBinary,
+        KeyCode::Char('5') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Logs,
         _ => handle_screen_keys(key, app),
     }
 }
@@ -346,7 +346,7 @@ fn handle_key_event(key: KeyEvent, app: &mut App) {
 fn handle_screen_keys(key: KeyEvent, app: &mut App) {
     match app.screen {
         AppScreen::Devices => match key.code {
-            KeyCode::Up => {
+            KeyCode::Up if !key.modifiers.contains(KeyModifiers::ALT) => {
                 if let Some(idx) = app.selected_device {
                     if idx > 0 {
                         app.selected_device = Some(idx - 1);
@@ -355,7 +355,7 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
                     app.selected_device = Some(0);
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Down if !key.modifiers.contains(KeyModifiers::ALT) => {
                 if let Some(idx) = app.selected_device {
                     if idx < app.devices.len() - 1 {
                         app.selected_device = Some(idx + 1);
@@ -364,9 +364,27 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
                     app.selected_device = Some(0);
                 }
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::ALT) => {
                 if let Some(idx) = app.selected_device {
                     app.toggle_device_selection(idx);
+                }
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Some(idx) = app.selected_device {
+                    if idx > 0 {
+                        app.selected_device = Some(idx - 1);
+                    }
+                } else if !app.devices.is_empty() {
+                    app.selected_device = Some(0);
+                }
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                if let Some(idx) = app.selected_device {
+                    if idx < app.devices.len() - 1 {
+                        app.selected_device = Some(idx + 1);
+                    }
+                } else if !app.devices.is_empty() {
+                    app.selected_device = Some(0);
                 }
             }
             _ => {}
@@ -416,11 +434,11 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
         AppScreen::Files => match key.code {
             KeyCode::Enter => {
                 if app.file_remote_path.is_empty() || app.file_local_path.is_empty() {
-                    app.status_message = "Press 'p' to push or 'l' to pull".to_string();
+                    app.status_message = "Press Alt+p to push or Alt+l to pull".to_string();
                 }
             }
-            KeyCode::Char('p') => app.push_file(),
-            KeyCode::Char('l') => app.pull_file(),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => app.push_file(),
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::ALT) => app.pull_file(),
             KeyCode::Char(c) => {
                 if app.file_remote_path.is_empty() || app.file_local_path.is_empty() {
                     // Determine which field to edit based on cursor position
@@ -456,7 +474,7 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
             _ => {}
         },
         AppScreen::Logs => match key.code {
-            KeyCode::Char('c') => app.logs.clear(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => app.logs.clear(),
             _ => {}
         },
     }
