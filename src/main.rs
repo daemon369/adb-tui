@@ -2,8 +2,8 @@ mod adb;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, DisableLineWrap, Clear, ClearType},
     ExecutableCommand,
 };
 use ratatui::{prelude::*, widgets::*};
@@ -254,6 +254,8 @@ fn main() -> Result<()> {
     }
     
     enable_raw_mode()?;
+    stdout().execute(DisableLineWrap)?;
+    stdout().execute(Clear(ClearType::All))?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
@@ -291,11 +293,14 @@ fn check_adb() -> Result<()> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
+        let is_commands = matches!(app.screen, AppScreen::Commands);
         terminal.draw(|f| ui(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                handle_key_event(key, app);
+                if key.kind == KeyEventKind::Press {
+                    handle_key_event(key, app);
+                }
             }
         }
 
@@ -359,11 +364,17 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
         },
         AppScreen::Commands => match key.code {
             KeyCode::Enter => app.execute_command(),
-            KeyCode::Char(c) => app.command_input.push(c),
-            KeyCode::Backspace => {
-                app.command_input.pop();
-            }
-            _ => {}
+        KeyCode::Char(c) => app.command_input.push(c),
+        KeyCode::Backspace => {
+            app.command_input.pop();
+        }
+        KeyCode::Left => {
+            // No-op for now, could add cursor movement later
+        }
+        KeyCode::Right => {
+            // No-op for now, could add cursor movement later
+        }
+        _ => {}
         },
         AppScreen::Files => match key.code {
             KeyCode::Enter => {
@@ -424,7 +435,7 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.size());
 
-    let tabs = Tabs::new(vec!["Devices", "Commands", "Files", "Run Binary", "Logs"])
+    let tabs = Tabs::new(vec!["Devices [1]", "Commands [2]", "Files [3]", "Run Binary [4]", "Logs [5]"])
         .select(match app.screen {
             AppScreen::Devices => 0,
             AppScreen::Commands => 1,
@@ -508,9 +519,17 @@ fn render_commands(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let input = Paragraph::new(app.command_input.clone())
+    // Render input area with the actual input text via ratatui
+    let input = Paragraph::new(Text::from(app.command_input.as_str()))
         .block(Block::default().borders(Borders::ALL).title("Command (Enter to execute)"));
     f.render_widget(input, chunks[0]);
+
+    // Position cursor at the end of the input text
+    // chunks[0] is the input widget area including borders
+    // Text content starts at (x + 1 for left border + 1 for padding, y + 1 for top border)
+    let cursor_x = chunks[0].x + 2 + app.command_input.chars().count() as u16;
+    let cursor_y = chunks[0].y + 1;
+    f.set_cursor(cursor_x, cursor_y);
 
     let output: Vec<ListItem> = app
         .command_output
