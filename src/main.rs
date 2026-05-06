@@ -6,11 +6,14 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, DisableLineWrap, Clear, ClearType},
     ExecutableCommand,
 };
-use ratatui::{prelude::*, widgets::*};
+use ratatui::{
+    prelude::*,
+    widgets::{self, *},
+};
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 enum AppScreen {
     Devices,
@@ -37,6 +40,8 @@ struct App {
     logs: Vec<String>,
     should_quit: bool,
     device_rx: Receiver<Vec<adb::Device>>,
+    notification: Option<String>,
+    notification_until: Option<Instant>,
 }
 
 impl App {
@@ -65,6 +70,8 @@ impl App {
             logs: Vec::new(),
             should_quit: false,
             device_rx: rx,
+            notification: None,
+            notification_until: None,
         }
     }
 
@@ -142,8 +149,27 @@ impl App {
         self.selected_devices = (0..self.devices.len()).collect();
     }
 
+    fn show_notification(&mut self, msg: String) {
+        self.notification = Some(msg);
+        self.notification_until = Some(Instant::now() + Duration::from_secs(3));
+    }
+
+    fn update_notification(&mut self) {
+        if let Some(until) = self.notification_until {
+            if Instant::now() >= until {
+                self.notification = None;
+                self.notification_until = None;
+            }
+        }
+    }
+
     fn execute_command(&mut self) {
         if self.command_input.is_empty() {
+            return;
+        }
+
+        if self.devices.is_empty() {
+            self.show_notification("No devices connected".to_string());
             return;
         }
 
@@ -151,7 +177,7 @@ impl App {
             if let Some(idx) = self.selected_device {
                 vec![self.devices[idx].id.clone()]
             } else {
-                self.status_message = "No device selected".to_string();
+                self.show_notification("No device selected".to_string());
                 return;
             }
         } else {
@@ -193,7 +219,12 @@ impl App {
 
     fn pull_file(&mut self) {
         if self.file_remote_path.is_empty() || self.file_local_path.is_empty() {
-            self.status_message = "Please specify both remote and local paths".to_string();
+            self.show_notification("Please specify both remote and local paths".to_string());
+            return;
+        }
+
+        if self.devices.is_empty() {
+            self.show_notification("No devices connected".to_string());
             return;
         }
 
@@ -201,7 +232,7 @@ impl App {
             if let Some(idx) = self.selected_device {
                 vec![self.devices[idx].id.clone()]
             } else {
-                self.status_message = "No device selected".to_string();
+                self.show_notification("No device selected".to_string());
                 return;
             }
         } else {
@@ -228,7 +259,12 @@ impl App {
 
     fn push_file(&mut self) {
         if self.file_remote_path.is_empty() || self.file_local_path.is_empty() {
-            self.status_message = "Please specify both local and remote paths".to_string();
+            self.show_notification("Please specify both local and remote paths".to_string());
+            return;
+        }
+
+        if self.devices.is_empty() {
+            self.show_notification("No devices connected".to_string());
             return;
         }
 
@@ -236,7 +272,7 @@ impl App {
             if let Some(idx) = self.selected_device {
                 vec![self.devices[idx].id.clone()]
             } else {
-                self.status_message = "No device selected".to_string();
+                self.show_notification("No device selected".to_string());
                 return;
             }
         } else {
@@ -263,14 +299,19 @@ impl App {
 
     fn run_binary(&mut self) {
         if self.binary_path.is_empty() {
-            self.status_message = "Please specify binary path".to_string();
+            self.show_notification("Please specify binary path".to_string());
+            return;
+        }
+
+        if self.devices.is_empty() {
+            self.show_notification("No devices connected".to_string());
             return;
         }
 
         let device_id = if let Some(idx) = self.selected_device {
             self.devices[idx].id.clone()
         } else {
-            self.status_message = "No device selected".to_string();
+            self.show_notification("No device selected".to_string());
             return;
         };
 
@@ -360,6 +401,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
         while let Ok(new_devices) = app.device_rx.try_recv() {
             app.update_devices(new_devices);
         }
+
+        app.update_notification();
 
         if app.should_quit {
             break;
@@ -563,6 +606,37 @@ fn ui(f: &mut Frame, app: &App) {
     let status = Paragraph::new(app.status_message.clone())
         .block(Block::default().borders(Borders::ALL).title("Status"));
     f.render_widget(status, chunks[2]);
+
+    // Render notification popup if present
+    if let Some(ref msg) = app.notification {
+        let area = centered_rect(50, 20, f.size());
+        let popup = Paragraph::new(msg.as_str())
+            .block(Block::default().borders(Borders::ALL).title("Notification"))
+            .style(Style::default().bg(Color::Red).fg(Color::White))
+            .alignment(Alignment::Center);
+        f.render_widget(widgets::Clear, area);
+        f.render_widget(popup, area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn render_devices(f: &mut Frame, area: Rect, app: &App) {
