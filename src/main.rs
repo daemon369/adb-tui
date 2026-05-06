@@ -370,12 +370,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 
 fn handle_key_event(key: KeyEvent, app: &mut App) {
     match key.code {
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::ALT) => {
-            if matches!(app.screen, AppScreen::Devices) {
-                app.should_quit = true;
-            } else {
-                app.screen = AppScreen::Devices;
-            }
+        KeyCode::Char('q') | KeyCode::Char('Q') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.should_quit = true;
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
             if matches!(app.screen, AppScreen::Devices) {
