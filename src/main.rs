@@ -18,8 +18,6 @@ use std::time::{Duration, Instant};
 enum AppScreen {
     Devices,
     Commands,
-    Files,
-    RunBinary,
     Logs,
 }
 
@@ -32,10 +30,6 @@ struct App {
     command_output: Vec<String>,
     command_history: Vec<String>,
     history_index: Option<usize>,
-    file_remote_path: String,
-    file_local_path: String,
-    binary_path: String,
-    binary_args: String,
     status_message: String,
     logs: Vec<String>,
     should_quit: bool,
@@ -62,10 +56,6 @@ impl App {
             command_output: Vec::new(),
             command_history: Vec::new(),
             history_index: None,
-            file_remote_path: String::new(),
-            file_local_path: String::new(),
-            binary_path: String::new(),
-            binary_args: String::new(),
             status_message: "Press 'q' to quit, 'r' to refresh devices".to_string(),
             logs: Vec::new(),
             should_quit: false,
@@ -216,129 +206,6 @@ impl App {
         self.history_index = None;
         self.command_input.clear();
     }
-
-    fn pull_file(&mut self) {
-        if self.file_remote_path.is_empty() || self.file_local_path.is_empty() {
-            self.show_notification("Please specify both remote and local paths".to_string());
-            return;
-        }
-
-        if self.devices.is_empty() {
-            self.show_notification("No devices connected".to_string());
-            return;
-        }
-
-        let devices: Vec<String> = if self.selected_devices.is_empty() {
-            if let Some(idx) = self.selected_device {
-                vec![self.devices[idx].id.clone()]
-            } else {
-                self.show_notification("No device selected".to_string());
-                return;
-            }
-        } else {
-            self.selected_devices.iter().map(|&i| self.devices[i].id.clone()).collect()
-        };
-
-        self.add_log(format!("Pulling {} to {} from {} device(s)", 
-            self.file_remote_path, self.file_local_path, devices.len()));
-        
-        let results = adb::batch_pull(&devices, &self.file_remote_path, &self.file_local_path);
-        for (device_id, result) in results {
-            match result {
-                Ok(()) => {
-                    self.add_log(format!("Successfully pulled from device {}", device_id));
-                    self.status_message = format!("Pulled from device {} successfully", device_id);
-                }
-                Err(e) => {
-                    self.add_log(format!("Failed to pull from device {}: {}", device_id, e));
-                    self.status_message = format!("Failed to pull from device {}: {}", device_id, e);
-                }
-            }
-        }
-    }
-
-    fn push_file(&mut self) {
-        if self.file_remote_path.is_empty() || self.file_local_path.is_empty() {
-            self.show_notification("Please specify both local and remote paths".to_string());
-            return;
-        }
-
-        if self.devices.is_empty() {
-            self.show_notification("No devices connected".to_string());
-            return;
-        }
-
-        let devices: Vec<String> = if self.selected_devices.is_empty() {
-            if let Some(idx) = self.selected_device {
-                vec![self.devices[idx].id.clone()]
-            } else {
-                self.show_notification("No device selected".to_string());
-                return;
-            }
-        } else {
-            self.selected_devices.iter().map(|&i| self.devices[i].id.clone()).collect()
-        };
-
-        self.add_log(format!("Pushing {} to {} on {} device(s)", 
-            self.file_local_path, self.file_remote_path, devices.len()));
-        
-        let results = adb::batch_push(&devices, &self.file_local_path, &self.file_remote_path);
-        for (device_id, result) in results {
-            match result {
-                Ok(()) => {
-                    self.add_log(format!("Successfully pushed to device {}", device_id));
-                    self.status_message = format!("Pushed to device {} successfully", device_id);
-                }
-                Err(e) => {
-                    self.add_log(format!("Failed to push to device {}: {}", device_id, e));
-                    self.status_message = format!("Failed to push to device {}: {}", device_id, e);
-                }
-            }
-        }
-    }
-
-    fn run_binary(&mut self) {
-        if self.binary_path.is_empty() {
-            self.show_notification("Please specify binary path".to_string());
-            return;
-        }
-
-        if self.devices.is_empty() {
-            self.show_notification("No devices connected".to_string());
-            return;
-        }
-
-        let device_id = if let Some(idx) = self.selected_device {
-            self.devices[idx].id.clone()
-        } else {
-            self.show_notification("No device selected".to_string());
-            return;
-        };
-
-        self.add_log(format!("Running binary {} on device {} with args: {}", 
-            self.binary_path, device_id, self.binary_args));
-        
-        let args: Vec<&str> = self.binary_args.split_whitespace().collect();
-        match adb::run_binary(&device_id, &self.binary_path, &args) {
-            Ok((stdout, stderr)) => {
-                self.command_output.clear();
-                self.command_output.push(format!("=== Running: {} ===", self.binary_path));
-                if !stdout.is_empty() {
-                    self.command_output.push(stdout.clone());
-                    self.add_log(format!("Output: {}", stdout));
-                }
-                if !stderr.is_empty() {
-                    self.command_output.push(format!("STDERR: {}", stderr));
-                    self.add_log(format!("STDERR: {}", stderr));
-                }
-                self.add_log(format!("Binary execution completed on device {}", device_id));
-            }
-            Err(e) => {
-                self.add_log(format!("Failed to run binary on device {}: {}", device_id, e));
-                self.status_message = format!("Failed to run binary: {}", e);
-            }
-        }
-    }
 }
 
 fn main() -> Result<()> {
@@ -423,9 +290,7 @@ fn handle_key_event(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Devices,
         KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Commands,
-        KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Files,
-        KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::RunBinary,
-        KeyCode::Char('5') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Logs,
+        KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => app.screen = AppScreen::Logs,
         _ => handle_screen_keys(key, app),
     }
 }
@@ -524,48 +389,6 @@ fn handle_screen_keys(key: KeyEvent, app: &mut App) {
             }
             _ => {}
         },
-        AppScreen::Files => match key.code {
-            KeyCode::Enter => {
-                if app.file_remote_path.is_empty() || app.file_local_path.is_empty() {
-                    app.status_message = "Press Alt+p to push or Alt+l to pull".to_string();
-                }
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => app.push_file(),
-            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::ALT) => app.pull_file(),
-            KeyCode::Char(c) => {
-                if app.file_remote_path.is_empty() || app.file_local_path.is_empty() {
-                    // Determine which field to edit based on cursor position
-                } else {
-                    app.file_remote_path.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if !app.file_remote_path.is_empty() {
-                    app.file_remote_path.pop();
-                } else if !app.file_local_path.is_empty() {
-                    app.file_local_path.pop();
-                }
-            }
-            _ => {}
-        },
-        AppScreen::RunBinary => match key.code {
-            KeyCode::Enter => app.run_binary(),
-            KeyCode::Char(c) => {
-                if app.binary_path.is_empty() || app.binary_args.is_empty() {
-                    app.binary_path.push(c);
-                } else {
-                    app.binary_args.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if !app.binary_args.is_empty() {
-                    app.binary_args.pop();
-                } else if !app.binary_path.is_empty() {
-                    app.binary_path.pop();
-                }
-            }
-            _ => {}
-        },
         AppScreen::Logs => match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => app.logs.clear(),
             _ => {}
@@ -583,13 +406,11 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.size());
 
-    let tabs = Tabs::new(vec!["Devices [1]", "Commands [2]", "Files [3]", "Run Binary [4]", "Logs [5]"])
+    let tabs = Tabs::new(vec!["Devices [1]", "Commands [2]", "Logs [3]"])
         .select(match app.screen {
             AppScreen::Devices => 0,
             AppScreen::Commands => 1,
-            AppScreen::Files => 2,
-            AppScreen::RunBinary => 3,
-            AppScreen::Logs => 4,
+            AppScreen::Logs => 2,
         })
         .block(Block::default().borders(Borders::ALL).title("ADB TUI Manager"))
         .style(Style::default().fg(Color::Cyan));
@@ -598,8 +419,6 @@ fn ui(f: &mut Frame, app: &App) {
     match app.screen {
         AppScreen::Devices => render_devices(f, chunks[1], app),
         AppScreen::Commands => render_commands(f, chunks[1], app),
-        AppScreen::Files => render_files(f, chunks[1], app),
-        AppScreen::RunBinary => render_run_binary(f, chunks[1], app),
         AppScreen::Logs => render_logs(f, chunks[1], app),
     }
 
@@ -734,58 +553,6 @@ fn render_commands(f: &mut Frame, area: Rect, app: &App) {
     let output_list = List::new(output)
         .block(Block::default().borders(Borders::ALL).title("Output"));
     f.render_widget(output_list, chunks[1]);
-}
-
-fn render_files(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-        ])
-        .split(area);
-
-    let remote = Paragraph::new(app.file_remote_path.clone())
-        .block(Block::default().borders(Borders::ALL).title("Remote Path (device)"));
-    f.render_widget(remote, chunks[0]);
-
-    let local = Paragraph::new(app.file_local_path.clone())
-        .block(Block::default().borders(Borders::ALL).title("Local Path (host)"));
-    f.render_widget(local, chunks[1]);
-
-    let help = Paragraph::new("Press 'p' to push, 'l' to pull")
-        .block(Block::default().borders(Borders::ALL).title("Actions"));
-    f.render_widget(help, chunks[2]);
-}
-
-fn render_run_binary(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(area);
-
-    let path = Paragraph::new(app.binary_path.clone())
-        .block(Block::default().borders(Borders::ALL).title("Binary Path on Device"));
-    f.render_widget(path, chunks[0]);
-
-    let args = Paragraph::new(app.binary_args.clone())
-        .block(Block::default().borders(Borders::ALL).title("Arguments (space separated)"));
-    f.render_widget(args, chunks[1]);
-
-    let output: Vec<ListItem> = app
-        .command_output
-        .iter()
-        .map(|line| ListItem::new(line.as_str()))
-        .collect();
-
-    let output_list = List::new(output)
-        .block(Block::default().borders(Borders::ALL).title("Output (Enter to run)"));
-    f.render_widget(output_list, chunks[2]);
 }
 
 fn render_logs(f: &mut Frame, area: Rect, app: &App) {
