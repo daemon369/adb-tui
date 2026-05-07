@@ -9,6 +9,7 @@ use crossterm::{
 use ratatui::{
     prelude::*,
     widgets::{self, *},
+    widgets::ListState,
 };
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver};
@@ -88,7 +89,9 @@ impl App {
                         device.status));
                 }
 
+                let has_devices = !devices.is_empty();
                 self.devices = devices;
+                self.selected_device = if has_devices { Some(0) } else { None };
                 self.status_message = format!("Found {} device(s)", count);
             }
             Err(e) => {
@@ -113,6 +116,8 @@ impl App {
             if idx >= self.devices.len() {
                 self.selected_device = if self.devices.is_empty() { None } else { Some(0) };
             }
+        } else if !self.devices.is_empty() {
+            self.selected_device = Some(0);
         }
 
         // Remove invalid multi-selections
@@ -469,14 +474,9 @@ fn render_devices(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, d)| {
-            let is_current = app.selected_device == Some(i);
             let is_multi_selected = app.selected_devices.contains(&i);
             let marker = if is_multi_selected { "[x]" } else { "[ ]" };
-            let style = if is_current && is_multi_selected {
-                Style::default().fg(Color::Green).bg(Color::DarkGray)
-            } else if is_current {
-                Style::default().fg(Color::Yellow)
-            } else if is_multi_selected {
+            let style = if is_multi_selected {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default()
@@ -492,10 +492,13 @@ fn render_devices(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
+    let mut list_state = ListState::default();
+    list_state.select(app.selected_device);
+
     let devices_list = List::new(device_items)
         .block(Block::default().borders(Borders::ALL).title(format!("Devices ({} selected) [Space: toggle, Ctrl+A/Ctrl+D]", app.selected_devices.len())))
-        .highlight_style(Style::default().bg(Color::DarkGray));
-    f.render_widget(devices_list, chunks[0]);
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
+    f.render_stateful_widget(devices_list, chunks[0], &mut list_state);
 
     let info = if app.selected_devices.is_empty() {
         if let Some(idx) = app.selected_device {
